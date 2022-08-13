@@ -1,5 +1,5 @@
-# RepParts
-RepParts: End-to-End Multiple Human Parsing with Representation Parts
+# RepParse
+RepParse: End-to-End Multiple Human Parsing with Representative Parts
 
 ## Abstact
 
