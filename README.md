@@ -30,7 +30,7 @@ Make sure to put the files as the following structure:
 
 ## Results
 
-### FashionPedia
+### CIHP
 
 |  Backbone    |  LR  | mIOU | APvol | AP_p50 | PCP50 | download |
 |--------------|:----:|:----:|:-----:|:------:|:-----:|:--------:|
