@@ -1,4 +1,3 @@
-import cv2
 import os
 import mmcv
 import numpy as np
@@ -37,7 +36,7 @@ class CIHP(CocoDataset):
         results['bbox_fields'] = []
         results['mask_fields'] = []
         results['seg_fields'] = []
-        results['parsing_fields'] = []
+        results['parse_fields'] = []
 
     def _parse_ann_info(self, img_info, ann_info):
         """Parse bbox and mask annotation.
@@ -100,105 +99,22 @@ class CIHP(CocoDataset):
             parsing_suffixs=gt_parsing_suffixs)
 
         return ann
-
-    def _parsing2json(self, results, outfile_prefix, seg_path):
-        """Convert instance segmentation results to COCO json style."""
-
-        parsing_json_results = []
+    
+    def _det2json(self, results):
+        """Convert detection results to COCO json style."""
+        json_results = []
         for idx in range(len(self)):
             file_name = self.data_infos[idx]['file_name']
             img_id = self.img_ids[idx]
-            if len(results[idx]) == 2:
-                det, parsing = results[idx]
-                score = None
-            else:
-                det, parsing, score = results[idx]
-                score = score[0]
-            det = det[0]
-            parsing = parsing[0]
-            for label in range(len(det)):
-                # bbox results
-                bboxes = det[label]
-                segms = parsing[label]
-                if score is not None:
-                    parsing_score = score[label]
-                if bboxes.shape[0] > 0:
-                    seg_per_img = np.zeros((segms[0].shape[0], segms[0].shape[1]), dtype=np.uint8)
+            result = results[idx]
+            for label in range(len(result)):
+                bboxes = result[label]
                 for i in range(bboxes.shape[0]):
                     data = dict()
                     data['image_id'] = img_id
                     data['bbox'] = self.xyxy2xywh(bboxes[i])
                     data['score'] = float(bboxes[i][4])
+                    data['parsing'] = file_name.split('.jpg')[0] + '-' + str(i) + '.png'
                     data['category_id'] = self.cat_ids[label]
-                    parsing_name = file_name.split('.jpg')[0] + '-' + str(i) + '.png'
-                    if score is not None:
-                        data['parsing_score'] = float(parsing_score[i])
-
-                    data['parsing'] = parsing_name
-
-                    cv2.imwrite(outfile_prefix + parsing_name, segms[i])
-                    parsing_json_results.append(data)
-                
-                num_bbox = range(bboxes.shape[0])
-                for i in reversed(num_bbox):
-                    if float(bboxes[i][4]) > 0.2:
-                        seg_per_img = cv2.bitwise_or(seg_per_img, segms[i].astype(np.uint8))
-                if bboxes.shape[0] > 0:
-                    seg_name = file_name.replace('jpg', 'png')
-                    cv2.imwrite(os.path.join(seg_path, seg_name), seg_per_img)
-
-        return parsing_json_results
-
-    def results2json(self, results, outfile_prefix):
-        """Dump the detection results to a COCO style json file.
-
-        There are 3 types of results: proposals, bbox predictions, mask
-        predictions, and they have different data types. This method will
-        automatically recognize the type, and dump them to json files.
-
-        Args:
-            results (list[list | tuple | ndarray]): Testing results of the
-                dataset.
-            outfile_prefix (str): The filename prefix of the json files. If the
-                prefix is "somepath/xxx", the json files will be named
-                "somepath/xxx.bbox.json", "somepath/xxx.segm.json",
-                "somepath/xxx.proposal.json".
-
-        Returns:
-            dict[str: str]: Possible keys are "bbox", "segm", "proposal", and \
-                values are corresponding filenames.
-        """
-        result_files = dict()
-        if len(results[0]) > 1:
-            filename_split = outfile_prefix.split('/')
-            outpath = filename_split[0]
-            for i in filename_split[1:-1]:
-                outpath = outpath +  '/' + i
-            outpath += '/val_parsing/'
-            seg_path = outpath.replace('val_parsing', 'val_seg')
-            if os.path.exists(outpath) == False:
-                os.makedirs(outpath)
-            if os.path.exists(seg_path) == False:
-                os.makedirs(seg_path)
-            json_results = self._parsing2json(results, outpath, seg_path)
-            result_files['bbox'] = f'{outfile_prefix}.bbox.json'
-            mmcv.dump(json_results, result_files['bbox'])
-        elif isinstance(results[0], list):
-            json_results = self._det2json(results)
-            result_files['bbox'] = f'{outfile_prefix}.bbox.json'
-            result_files['proposal'] = f'{outfile_prefix}.bbox.json'
-            mmcv.dump(json_results, result_files['bbox'])
-        elif isinstance(results[0], tuple):
-            json_results = self._segm2json(results)
-            result_files['bbox'] = f'{outfile_prefix}.bbox.json'
-            result_files['proposal'] = f'{outfile_prefix}.bbox.json'
-            result_files['segm'] = f'{outfile_prefix}.segm.json'
-            mmcv.dump(json_results[0], result_files['bbox'])
-            mmcv.dump(json_results[1], result_files['segm'])
-        elif isinstance(results[0], np.ndarray):
-            json_results = self._proposal2json(results)
-            result_files['proposal'] = f'{outfile_prefix}.proposal.json'
-            mmcv.dump(json_results, result_files['proposal'])
-        else:
-            raise TypeError('invalid type of results')
-        return result_files
+                    json_results.append(data)
+        return json_results

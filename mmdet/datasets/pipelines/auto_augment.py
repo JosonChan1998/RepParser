@@ -1,7 +1,5 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-from ast import Pass
 import copy
-from unittest import result
 
 import cv2
 import mmcv
@@ -364,9 +362,7 @@ class Rotate:
                  seg_ignore_label=255,
                  prob=0.5,
                  max_rotate_angle=30,
-                 random_negative_prob=0.5,
-                 min_size=0,
-                 recommpute_bbox=True):
+                 random_negative_prob=0.5):
         assert isinstance(level, (int, float)), \
             f'The level must be type int or float. got {type(level)}.'
         assert 0 <= level <= _MAX_LEVEL, \
@@ -394,7 +390,7 @@ class Rotate:
             'all elements of img_fill_val should between range [0,255]. '\
             f'got {img_fill_val}.'
         assert 0 <= prob <= 1.0, 'The probability should be in range [0,1]. '\
-            'got {prob}.'
+            f'got {prob}.'
         assert isinstance(max_rotate_angle, (int, float)), 'max_rotate_angle '\
             f'should be type int or float. got type {type(max_rotate_angle)}.'
         self.level = level
@@ -408,17 +404,6 @@ class Rotate:
         self.prob = prob
         self.max_rotate_angle = max_rotate_angle
         self.random_negative_prob = random_negative_prob
-        self.min_size = min_size
-        self.recommpute_bbox = recommpute_bbox
-
-        self.bbox2parsing = {
-            'gt_bboxes': 'gt_parsings',
-            'gt_bboxes_ignore': 'gt_parsings_ignore'
-        }
-        self.bbox2parsing_labels = {
-            'gt_bboxes': 'gt_parsing_labels',
-            'gt_bboxes_ignore': 'gt_parsing_labels_ignore'
-        }
 
     def _rotate_img(self, results, angle, center=None, scale=1.0):
         """Rotate the image.
@@ -497,8 +482,7 @@ class Rotate:
             seg = results[key].copy()
             results[key] = mmcv.imrotate(
                 seg, angle, center, scale,
-                border_value=fill_val,
-                interpolation='nearest').astype(seg.dtype)
+                border_value=fill_val).astype(seg.dtype)
 
     def _filter_invalid(self, results, min_bbox_size=0):
         """Filter bboxes and corresponding masks too small after rotate
@@ -508,8 +492,7 @@ class Rotate:
             bbox_w = results[key][:, 2] - results[key][:, 0]
             bbox_h = results[key][:, 3] - results[key][:, 1]
             valid_inds = (bbox_w > min_bbox_size) & (bbox_h > min_bbox_size)
-            if (key == 'gt_bboxes' and not valid_inds.any()):
-                return None
+            valid_inds = np.nonzero(valid_inds)[0]
             results[key] = results[key][valid_inds]
             # label fields. e.g. gt_labels and gt_labels_ignore
             label_key = bbox2label.get(key)
@@ -519,62 +502,6 @@ class Rotate:
             mask_key = bbox2mask.get(key)
             if mask_key in results:
                 results[mask_key] = results[mask_key][valid_inds]
-            # parsing fields
-            parsing_key = self.bbox2parsing.get(key)
-            if parsing_key in results:
-                results[parsing_key] = results[parsing_key][valid_inds]
-            # parsing labels fields
-            parsing_labels_key = self.bbox2parsing_labels.get(key)
-            if parsing_labels_key in results:
-                results[parsing_labels_key] = results[parsing_labels_key][valid_inds]
-    
-    def _rotate_parsings(self,
-                         results,
-                         angle,
-                         center=None,
-                         scale=1.0,
-                         fill_val=0):
-        
-        if 'gt_parsings' in results.keys():
-            parsings = results['gt_parsings'].copy()
-            rotate_parsings = []
-            for parsing in parsings:
-                rotate_parsing = mmcv.imrotate(
-                    parsing, angle, center, scale,
-                    border_value=fill_val,
-                    interpolation='nearest').astype(parsing.dtype)
-                rotate_parsings.append(rotate_parsing)
-            results['gt_parsings'] = np.array(rotate_parsings)
-
-            if self.recommpute_bbox:
-                img_shape = results['img_shape']
-                num_parsings = len(results['gt_parsings'])
-                boxes = np.zeros((num_parsings, 4), dtype=np.float32)
-                x_any = results['gt_parsings'].any(axis=1)
-                y_any = results['gt_parsings'].any(axis=2)
-                for idx in range(num_parsings):
-                    x = np.where(x_any[idx, :])[0]
-                    y = np.where(y_any[idx, :])[0]
-                    if len(x) > 0 and len(y) > 0:
-                        # use +1 for x_max and y_max so that the right and bottom
-                        # boundary of instance masks are fully included by the box
-                        boxes[idx, :] = np.array([x[0], y[0], x[-1] + 1, y[-1] + 1],
-                                                dtype=np.float32)
-                # clip border
-                boxes[..., 0::2] = np.clip(boxes[..., 0::2], 0, img_shape[1])
-                boxes[..., 1::2] = np.clip(boxes[..., 1::2], 0, img_shape[0])
-                results['gt_bboxes'] = boxes
-    
-    def _rotate_parsing_lables(self, results):
-        if 'gt_parsing_labels' in results.keys():
-            num_parsing_class = len(results['parsing_classes'])
-            gt_parsings = results['gt_parsings']
-            num_instances = gt_parsings.shape[0]
-            parsing_labels = np.zeros((num_instances, num_parsing_class), dtype=np.int64)
-            for i in range(1, num_parsing_class):
-                num_gt_parsing_labels = (gt_parsings.reshape(num_instances, -1) == i).sum(1)
-                parsing_labels[:, i] = (num_gt_parsing_labels > 0).astype(np.int64)
-            results['gt_parsing_labels'] = parsing_labels[:, 1:]
 
     def __call__(self, results):
         """Call function to rotate images, bounding boxes, masks and semantic
@@ -589,45 +516,18 @@ class Rotate:
         if np.random.rand() > self.prob:
             return results
         h, w = results['img'].shape[:2]
-        # cv2.imwrite('source.jpg', results['img'])
         center = self.center
         if center is None:
             center = ((w - 1) * 0.5, (h - 1) * 0.5)
         angle = random_negative(self.angle, self.random_negative_prob)
         self._rotate_img(results, angle, center, self.scale)
-        # cv2.imwrite('rotate.jpg', results['img'])
         rotate_matrix = cv2.getRotationMatrix2D(center, -angle, self.scale)
         self._rotate_bboxes(results, rotate_matrix)
         self._rotate_masks(results, angle, center, self.scale, fill_val=0)
         self._rotate_seg(
             results, angle, center, self.scale, fill_val=self.seg_ignore_label)
-        # colormap = self.create_pascal_label_colormap()
-        # seg_map = results['gt_semantic_seg']
-        # seg_image = colormap[seg_map].astype(np.uint8)
-        # cv2.imwrite("seg.jpg", seg_image)
-        self._rotate_parsings(results, angle, center, self.scale, fill_val=0)
-        # parsing_maps = results['gt_parsings']
-        # for i, parsing in enumerate(parsing_maps):
-        #     parsing_image = colormap[parsing].astype(np.uint8)
-        #     cv2.imwrite("flip_parsing-" + str(i) + ".jpg", parsing_image)
-        # for i in results['gt_bboxes']:
-        #     rect = cv2.rectangle(results['img'], (int(i[0]),int(i[1])), (int(i[2]),int(i[3])), (0,255,0), 2)
-        #     cv2.imwrite('rect.jpg', rect)
-        self._rotate_parsing_lables(results)
-        self._filter_invalid(results, min_bbox_size=self.min_size)
+        self._filter_invalid(results)
         return results
-    
-    def create_pascal_label_colormap(self):
-    
-        colormap = np.zeros((256, 3), dtype=int)
-        ind = np.arange(256, dtype=int)
-
-        for shift in reversed(range(8)):
-            for channel in range(3):
-                colormap[:, channel] |= ((ind >> channel) & 1) << shift
-            ind >>= 3
-
-        return colormap
 
     def __repr__(self):
         repr_str = self.__class__.__name__
@@ -709,14 +609,6 @@ class Translate:
         self.max_translate_offset = max_translate_offset
         self.random_negative_prob = random_negative_prob
         self.min_size = min_size
-        self.bbox2parsing = {
-            'gt_bboxes': 'gt_parsings',
-            'gt_bboxes_ignore': 'gt_parsings_ignore'
-        }
-        self.bbox2parsing_labels = {
-            'gt_bboxes': 'gt_parsing_labels',
-            'gt_bboxes_ignore': 'gt_parsing_labels_ignore'
-        }
 
     def _translate_img(self, results, offset, direction='horizontal'):
         """Translate the image.
@@ -771,34 +663,7 @@ class Translate:
         for key in results.get('seg_fields', []):
             seg = results[key].copy()
             results[key] = mmcv.imtranslate(seg, offset, direction,
-                                            fill_val,
-                                            interpolation='nearest').astype(seg.dtype)
-
-    def _translate_parsings(self,
-                            results,
-                            offset,
-                            direction='horizontal',
-                            fill_val=0):
-        if 'gt_parsings' in results.keys():
-            parsings = results['gt_parsings'].copy()
-            rotate_parsings = []
-            for parsing in parsings:
-                rotate_parsings.append(mmcv.imtranslate(
-                    parsing, offset, direction,
-                    border_value=fill_val,
-                    interpolation='nearest').astype(parsing.dtype))
-            results['gt_parsings'] = np.array(rotate_parsings)
-
-    def _translate_parsing_lables(self, results):
-        if 'gt_parsing_labels' in results.keys():
-            num_parsing_class = len(results['parsing_classes'])
-            gt_parsings = results['gt_parsings']
-            num_instances = gt_parsings.shape[0]
-            parsing_labels = np.zeros((num_instances, num_parsing_class), dtype=np.int64)
-            for i in range(1, num_parsing_class):
-                num_gt_parsing_labels = (gt_parsings.reshape(num_instances, -1) == i).sum(1)
-                parsing_labels[:, i] = (num_gt_parsing_labels > 0).astype(np.int64)
-            results['gt_parsing_labels'] = parsing_labels[:, 1:]
+                                            fill_val).astype(seg.dtype)
 
     def _filter_invalid(self, results, min_size=0):
         """Filter bboxes and masks too small or translated out of image."""
@@ -807,9 +672,6 @@ class Translate:
             bbox_w = results[key][:, 2] - results[key][:, 0]
             bbox_h = results[key][:, 3] - results[key][:, 1]
             valid_inds = (bbox_w > min_size) & (bbox_h > min_size)
-            # add valid filter
-            if (key == 'gt_bboxes' and not valid_inds.any()):
-                return None
             valid_inds = np.nonzero(valid_inds)[0]
             results[key] = results[key][valid_inds]
             # label fields. e.g. gt_labels and gt_labels_ignore
@@ -820,27 +682,7 @@ class Translate:
             mask_key = bbox2mask.get(key)
             if mask_key in results:
                 results[mask_key] = results[mask_key][valid_inds]
-            # parsing fields
-            parsing_key = self.bbox2parsing.get(key)
-            if parsing_key in results:
-                results[parsing_key] = results[parsing_key][valid_inds]
-            # parsing labels fields
-            parsing_labels_key = self.bbox2parsing_labels.get(key)
-            if parsing_labels_key in results:
-                results[parsing_labels_key] = results[parsing_labels_key][valid_inds]
-
         return results
-    
-    def create_pascal_label_colormap(self):
-    
-        colormap = np.zeros((256, 3), dtype=int)
-        ind = np.arange(256, dtype=int)
-
-        for shift in reversed(range(8)):
-            for channel in range(3):
-                colormap[:, channel] |= ((ind >> channel) & 1) << shift
-            ind >>= 3
-        return colormap
 
     def __call__(self, results):
         """Call function to translate images, bounding boxes, masks and
@@ -854,10 +696,8 @@ class Translate:
         """
         if np.random.rand() > self.prob:
             return results
-        # cv2.imwrite('source.jpg', results['img'])
         offset = random_negative(self.offset, self.random_negative_prob)
         self._translate_img(results, offset, self.direction)
-        # cv2.imwrite('translate.jpg', results['img'])
         self._translate_bboxes(results, offset)
         # fill_val defaultly 0 for BitmapMasks and None for PolygonMasks.
         self._translate_masks(results, offset, self.direction)
@@ -865,19 +705,6 @@ class Translate:
         # of segmentation map.
         self._translate_seg(
             results, offset, self.direction, fill_val=self.seg_ignore_label)
-        # colormap = self.create_pascal_label_colormap()
-        # seg_map = results['gt_semantic_seg']
-        # seg_image = colormap[seg_map].astype(np.uint8)
-        # cv2.imwrite("seg.jpg", seg_image)
-        self._translate_parsings(results, offset, self.direction)
-        # parsing_maps = results['gt_parsings']
-        # for i, parsing in enumerate(parsing_maps):
-        #     parsing_image = colormap[parsing].astype(np.uint8)
-        #     cv2.imwrite("trans_parsing-" + str(i) + ".jpg", parsing_image)
-        # for i in results['gt_bboxes']:
-        #     rect = cv2.rectangle(results['img'], (int(i[0]),int(i[1])), (int(i[2]),int(i[3])), (0,255,0), 2)
-        #     cv2.imwrite('rect.jpg', rect)
-        self._translate_parsing_lables(results)
         self._filter_invalid(results, min_size=self.min_size)
         return results
 

@@ -4,7 +4,7 @@ RepParser: End-to-End Multiple Human Parsing with Representative Parts
 ## Installation
 - pytorch 1.7.1
 - python 3.7.0
-- [mmdetection 2.20.0](https://mmdetection.readthedocs.io/en/latest/get_started.html#installation)
+- [mmdetection 2.25.2](https://mmdetection.readthedocs.io/en/latest/get_started.html#installation)
 
 ## Dataset
 You need to download the datasets and annotations follwing this repo's formate
@@ -39,13 +39,14 @@ Make sure to put the files as the following structure:
 ## Evaluation
 ```
 # inference
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ./tools/dist_test.sh configs/repparser/repparser_r50_45k_cihp.py work_dirs/repparser_r50_45k_cihp/iter_45000.pth 8 --eval bbox --eval-options "jsonfile_prefix=work_dirs/repparser_r50_45k_cihp/repparser_r50_45k_cihp_val_result"
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ./tools/dist_test.sh configs/ReSParser/resparser_r50_fpn_3x_cihp.py work_dirs/resparser_r50_fpn_3x_cihp/iter_45000.pth 8 --eval bbox --eval-options "jsonfile_prefix=work_dirs/resparser_r50_fpn_3x_cihp/resparser_r50_fpn_3x_cihp_val_result"
 
 # eval, noted that should change the json path produce by previous step.
 python utils/eval.py
 ```
 
 ## Training
-
-Coming soon...
+```
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ./tools/dist_train.sh configs/ReSParser/resparser_r50_fpn_3x_cihp.py 8
+```
 

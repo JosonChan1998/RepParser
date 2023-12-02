@@ -16,6 +16,7 @@ except ImportError:
 class MaskHungarianAssigner(BaseAssigner):
     """Computes one-to-one matching between predictions and ground truth for
     mask.
+
     This class computes an assignment between the targets and the predictions
     based on the costs. The costs are weighted sum of three components:
     classification cost, mask focal cost and mask dice cost. The
@@ -23,12 +24,14 @@ class MaskHungarianAssigner(BaseAssigner):
     predictions than targets. After the one-to-one matching, the un-matched
     are treated as backgrounds. Thus each query prediction will be assigned
     with `0` or a positive integer indicating the ground truth index:
+
     - 0: negative sample, no assigned gt
     - positive integer: positive sample, index (1-based) of assigned gt
+
     Args:
-        cls_cost (obj:`mmcv.ConfigDict` | dict): Classification cost config.
-        mask_cost (obj:`mmcv.ConfigDict` | dict): Mask cost config.
-        dice_cost (obj:`mmcv.ConfigDict` | dict): Dice cost config.
+        cls_cost (:obj:`mmcv.ConfigDict` | dict): Classification cost config.
+        mask_cost (:obj:`mmcv.ConfigDict` | dict): Mask cost config.
+        dice_cost (:obj:`mmcv.ConfigDict` | dict): Dice cost config.
     """
 
     def __init__(self,
@@ -49,8 +52,9 @@ class MaskHungarianAssigner(BaseAssigner):
                gt_bboxes_ignore=None,
                eps=1e-7):
         """Computes one-to-one matching based on the weighted costs.
+
         Args:
-            cls_pred (Tensor): Class prediction in shape
+            cls_pred (Tensor | None): Class prediction in shape
                 (num_query, cls_out_channels).
             mask_pred (Tensor): Mask prediction in shape (num_query, H, W).
             gt_labels (Tensor): Label of 'gt_mask'in shape = (num_gt, ).
@@ -60,20 +64,23 @@ class MaskHungarianAssigner(BaseAssigner):
                 labelled as `ignored`. Default None.
             eps (int | float, optional): A value added to the denominator for
                 numerical stability. Default 1e-7.
+
         Returns:
             :obj:`AssignResult`: The assigned result.
         """
         assert gt_bboxes_ignore is None, \
             'Only case when gt_bboxes_ignore is None is supported.'
-        num_gt, num_query = gt_labels.shape[0], cls_pred.shape[0]
+        # K-Net sometimes passes cls_pred=None to this assigner.
+        # So we should use the shape of mask_pred
+        num_gt, num_query = gt_labels.shape[0], mask_pred.shape[0]
 
         # 1. assign -1 by default
-        assigned_gt_inds = cls_pred.new_full((num_query, ),
+        assigned_gt_inds = mask_pred.new_full((num_query, ),
+                                              -1,
+                                              dtype=torch.long)
+        assigned_labels = mask_pred.new_full((num_query, ),
                                              -1,
                                              dtype=torch.long)
-        assigned_labels = cls_pred.new_full((num_query, ),
-                                            -1,
-                                            dtype=torch.long)
         if num_gt == 0 or num_query == 0:
             # No ground truth or boxes, return empty assignment
             if num_gt == 0:
@@ -111,16 +118,15 @@ class MaskHungarianAssigner(BaseAssigner):
 
         matched_row_inds, matched_col_inds = linear_sum_assignment(cost)
         matched_row_inds = torch.from_numpy(matched_row_inds).to(
-            cls_pred.device)
+            mask_pred.device)
         matched_col_inds = torch.from_numpy(matched_col_inds).to(
-            cls_pred.device)
+            mask_pred.device)
 
         # 4. assign backgrounds and foregrounds
         # assign all indices to backgrounds first
         assigned_gt_inds[:] = 0
         # assign foregrounds based on matching results
         assigned_gt_inds[matched_row_inds] = matched_col_inds + 1
-        if len(gt_labels.shape) == 1:
-            assigned_labels[matched_row_inds] = gt_labels[matched_col_inds]
+        assigned_labels[matched_row_inds] = gt_labels[matched_col_inds]
         return AssignResult(
             num_gt, assigned_gt_inds, None, labels=assigned_labels)

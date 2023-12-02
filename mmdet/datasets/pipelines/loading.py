@@ -1,9 +1,8 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import os.path as osp
-from unittest import result
 
-import mmcv
 import cv2
+import mmcv
 import numpy as np
 import pycocotools.mask as maskUtils
 
@@ -39,9 +38,11 @@ class LoadImageFromFile:
     def __init__(self,
                  to_float32=False,
                  color_type='color',
+                 channel_order='bgr',
                  file_client_args=dict(backend='disk')):
         self.to_float32 = to_float32
         self.color_type = color_type
+        self.channel_order = channel_order
         self.file_client_args = file_client_args.copy()
         self.file_client = None
 
@@ -65,7 +66,8 @@ class LoadImageFromFile:
             filename = results['img_info']['filename']
 
         img_bytes = self.file_client.get(filename)
-        img = mmcv.imfrombytes(img_bytes, flag=self.color_type)
+        img = mmcv.imfrombytes(
+            img_bytes, flag=self.color_type, channel_order=self.channel_order)
         if self.to_float32:
             img = img.astype(np.float32)
 
@@ -81,6 +83,7 @@ class LoadImageFromFile:
         repr_str = (f'{self.__class__.__name__}('
                     f'to_float32={self.to_float32}, '
                     f"color_type='{self.color_type}', "
+                    f"channel_order='{self.channel_order}', "
                     f'file_client_args={self.file_client_args})')
         return repr_str
 
@@ -215,6 +218,9 @@ class LoadAnnotations:
             annotation. Default: False.
         poly2mask (bool): Whether to convert the instance masks from polygons
             to bitmaps. Default: True.
+        denorm_bbox (bool): Whether to convert bbox from relative value to
+            absolute value. Only used in OpenImage Dataset.
+            Default: False.
         file_client_args (dict): Arguments to instantiate a FileClient.
             See :class:`mmcv.fileio.FileClient` for details.
             Defaults to ``dict(backend='disk')``.
@@ -225,17 +231,17 @@ class LoadAnnotations:
                  with_label=True,
                  with_mask=False,
                  with_seg=False,
-                 with_parsing=False,
-                 with_parsing_label=False,
+                 with_parse=False,
                  poly2mask=True,
+                 denorm_bbox=False,
                  file_client_args=dict(backend='disk')):
         self.with_bbox = with_bbox
         self.with_label = with_label
         self.with_mask = with_mask
         self.with_seg = with_seg
-        self.with_parsing = with_parsing
-        self.with_parsing_label = with_parsing_label
+        self.with_parse = with_parse
         self.poly2mask = poly2mask
+        self.denorm_bbox = denorm_bbox
         self.file_client_args = file_client_args.copy()
         self.file_client = None
 
@@ -252,11 +258,23 @@ class LoadAnnotations:
         ann_info = results['ann_info']
         results['gt_bboxes'] = ann_info['bboxes'].copy()
 
+        if self.denorm_bbox:
+            bbox_num = results['gt_bboxes'].shape[0]
+            if bbox_num != 0:
+                h, w = results['img_shape'][:2]
+                results['gt_bboxes'][:, 0::2] *= w
+                results['gt_bboxes'][:, 1::2] *= h
+
         gt_bboxes_ignore = ann_info.get('bboxes_ignore', None)
         if gt_bboxes_ignore is not None:
             results['gt_bboxes_ignore'] = gt_bboxes_ignore.copy()
             results['bbox_fields'].append('gt_bboxes_ignore')
         results['bbox_fields'].append('gt_bboxes')
+
+        gt_is_group_ofs = ann_info.get('gt_is_group_ofs', None)
+        if gt_is_group_ofs is not None:
+            results['gt_is_group_ofs'] = gt_is_group_ofs.copy()
+
         return results
 
     def _load_labels(self, results):
@@ -363,15 +381,6 @@ class LoadAnnotations:
         return results
     
     def _load_parsing(self, results):
-        """Private function to load parsing annotations.
-
-        Args:
-            results (dict): Result dict from :obj:`dataset`.
-
-        Returns:
-            dict: The dict contains loaded human parsing annotations.
-        """
-
         if self.file_client is None:
             self.file_client = mmcv.FileClient(**self.file_client_args)
 
@@ -383,18 +392,7 @@ class LoadAnnotations:
                 mmcv.imfrombytes(img_bytes, flag='unchanged').squeeze())
 
         results['gt_parsings'] = np.array(parsing_maps, dtype=np.uint8)
-        return results
-    
-    def _load_parsing_labels(self, results):
-        num_parsing_class = len(results['parsing_classes'])
-        gt_parsings = results['gt_parsings']
-        num_instances = gt_parsings.shape[0]
-        parsing_labels = np.zeros((num_instances, num_parsing_class), dtype=np.int64)
-        for i in range(1, num_parsing_class):
-            num_gt_parsing_labels = (gt_parsings.reshape(num_instances, -1) == i).sum(1)
-            parsing_labels[:, i] = (num_gt_parsing_labels > 0).astype(np.int64)
-        results['gt_parsing_labels'] = parsing_labels[:, 1:]
-
+        results['parse_fields'].append('gt_parsings')
         return results
 
     def __call__(self, results):
@@ -418,11 +416,8 @@ class LoadAnnotations:
             results = self._load_masks(results)
         if self.with_seg:
             results = self._load_semantic_seg(results)
-        if self.with_parsing:
+        if self.with_parse:
             results = self._load_parsing(results)
-        if self.with_parsing_label:
-            results = self._load_parsing_labels(results)
-
         return results
 
     def __repr__(self):
@@ -432,8 +427,9 @@ class LoadAnnotations:
         repr_str += f'with_mask={self.with_mask}, '
         repr_str += f'with_seg={self.with_seg}, '
         repr_str += f'poly2mask={self.poly2mask}, '
-        repr_str += f'poly2mask={self.file_client_args})'
+        repr_str += f'file_client_args={self.file_client_args})'
         return repr_str
+
 
 @PIPELINES.register_module()
 class LoadPanopticAnnotations(LoadAnnotations):
@@ -465,9 +461,14 @@ class LoadPanopticAnnotations(LoadAnnotations):
                 'pip install git+https://github.com/cocodataset/'
                 'panopticapi.git.')
 
-        super(LoadPanopticAnnotations,
-              self).__init__(with_bbox, with_label, with_mask, with_seg, True,
-                             file_client_args)
+        super(LoadPanopticAnnotations, self).__init__(
+            with_bbox=with_bbox,
+            with_label=with_label,
+            with_mask=with_mask,
+            with_seg=with_seg,
+            poly2mask=True,
+            denorm_bbox=False,
+            file_client_args=file_client_args)
 
     def _load_masks_and_semantic_segs(self, results):
         """Private function to load mask and semantic segmentation annotations.
@@ -583,7 +584,7 @@ class LoadProposals:
 
     def __repr__(self):
         return self.__class__.__name__ + \
-               f'(num_max_proposals={self.num_max_proposals})'
+            f'(num_max_proposals={self.num_max_proposals})'
 
 
 @PIPELINES.register_module()
@@ -591,45 +592,81 @@ class FilterAnnotations:
     """Filter invalid annotations.
 
     Args:
-        min_gt_bbox_wh (tuple[int]): Minimum width and height of ground truth
-            boxes.
+        min_gt_bbox_wh (tuple[float]): Minimum width and height of ground truth
+            boxes. Default: (1., 1.)
+        min_gt_mask_area (int): Minimum foreground area of ground truth masks.
+            Default: 1
+        by_box (bool): Filter instances with bounding boxes not meeting the
+            min_gt_bbox_wh threshold. Default: True
+        by_mask (bool): Filter instances with masks not meeting
+            min_gt_mask_area threshold. Default: False
         keep_empty (bool): Whether to return None when it
             becomes an empty bbox after filtering. Default: True
     """
 
-    def __init__(self, min_gt_bbox_wh, keep_empty=True):
+    def __init__(self,
+                 min_gt_bbox_wh=(1., 1.),
+                 min_gt_mask_area=1,
+                 by_box=True,
+                 by_mask=False,
+                 keep_empty=True):
         # TODO: add more filter options
+        assert by_box or by_mask
         self.min_gt_bbox_wh = min_gt_bbox_wh
+        self.min_gt_mask_area = min_gt_mask_area
+        self.by_box = by_box
+        self.by_mask = by_mask
         self.keep_empty = keep_empty
 
     def __call__(self, results):
-        assert 'gt_bboxes' in results
-        gt_bboxes = results['gt_bboxes']
-        if gt_bboxes.shape[0] == 0:
+        if self.by_box:
+            assert 'gt_bboxes' in results
+            gt_bboxes = results['gt_bboxes']
+            instance_num = gt_bboxes.shape[0]
+        if self.by_mask:
+            assert 'gt_masks' in results
+            gt_masks = results['gt_masks']
+            instance_num = len(gt_masks)
+
+        if instance_num == 0:
             return results
-        w = gt_bboxes[:, 2] - gt_bboxes[:, 0]
-        h = gt_bboxes[:, 3] - gt_bboxes[:, 1]
-        keep = (w > self.min_gt_bbox_wh[0]) & (h > self.min_gt_bbox_wh[1])
-        if not keep.any():
+
+        tests = []
+        if self.by_box:
+            w = gt_bboxes[:, 2] - gt_bboxes[:, 0]
+            h = gt_bboxes[:, 3] - gt_bboxes[:, 1]
+            tests.append((w > self.min_gt_bbox_wh[0])
+                         & (h > self.min_gt_bbox_wh[1]))
+        if self.by_mask:
+            gt_masks = results['gt_masks']
+            tests.append(gt_masks.areas >= self.min_gt_mask_area)
+
+        keep = tests[0]
+        for t in tests[1:]:
+            keep = keep & t
+
+        keep = keep.nonzero()[0]
+
+        keys = ('gt_bboxes', 'gt_labels', 'gt_masks')
+        for key in keys:
+            if key in results:
+                results[key] = results[key][keep]
+        if keep.size == 0:
             if self.keep_empty:
                 return None
-            else:
-                return results
-        else:
-            keys = ('gt_bboxes', 'gt_labels', 'gt_masks', 'gt_semantic_seg'
-                    'gt_parts_bboxes', 'gt_parts_labels', 'gt_parts_verbs', 'gt_states')
-            for key in keys:
-                if key in results:
-                    results[key] = results[key][keep]
-            return results
+        return results
 
     def __repr__(self):
         return self.__class__.__name__ + \
-               f'(min_gt_bbox_wh={self.min_gt_bbox_wh},' \
-               f'always_keep={self.always_keep})'
+            f'(min_gt_bbox_wh={self.min_gt_bbox_wh},' \
+            f'min_gt_mask_area={self.min_gt_mask_area},' \
+            f'by_box={self.by_box},' \
+            f'by_mask={self.by_mask},' \
+            f'always_keep={self.always_keep})'
+
 
 @PIPELINES.register_module()
-class LoadPartAnno:
+class LoadParseAnnotations:
     def __init__(self, num_parse_classes=20) -> None:
         self.num_parse_classes = num_parse_classes
 
@@ -637,24 +674,67 @@ class LoadPartAnno:
         gt_parsings = results['gt_parsings']
         num_instances = gt_parsings.shape[0]
         part_labels = np.zeros((num_instances, self.num_parse_classes), dtype=np.int64)
-        part_points = np.zeros((num_instances, self.num_parse_classes, 2), dtype=np.float32)
 
         for i, parsing in enumerate(gt_parsings):
             for j in range(1, self.num_parse_classes):
                 num_gt_parsing_labels = (parsing.reshape(-1) == j).sum(0)
                 part_labels[i, j] = (num_gt_parsing_labels > 0).astype(np.int64)
 
-                if num_gt_parsing_labels > 0:
-                    part_map = (parsing == j)[None]
-                    x_any = part_map.any(axis=1)
-                    y_any = part_map.any(axis=2)
-                    x = np.where(x_any[0, :])[0]
-                    y = np.where(y_any[0, :])[0]
-                    if len(x) > 0 and len(y) > 0:
-                        part_points[i, j, :] = np.array([(x[0] + x[-1]+1) / 2, (y[0] + y[-1]+1) / 2],
-                                                dtype=np.float32)
+        results['gt_fine_parse_labels'] = part_labels[:, 1:]
+        return results
 
-        results['gt_parsing_labels'] = part_labels[:, 1:]
-        results['gt_part_points'] = part_points[:, 1:, :]
+
+@PIPELINES.register_module()
+class LoadMajorPartAnnotations:
+    def __init__(self,
+                 num_coarse_classes=7,
+                 num_fine_classes=20,
+                 coarse_to_fine_maps=None):
+        self.num_coarse_classes = num_coarse_classes
+        self.num_fine_classes = num_fine_classes
+        self.coarse_to_fine_maps = coarse_to_fine_maps
+
+    def __call__(self, results):
+        gt_parsings = results['gt_parsings']
+        gt_bboxes = results['gt_bboxes'].copy()
+        num_instances = gt_parsings.shape[0]
+        coarse_part_labels = np.zeros((num_instances, self.num_coarse_classes), dtype=np.int64)
+        coarse_part_points = np.zeros((num_instances, self.num_coarse_classes, 2), dtype=np.float32)
+        coarse_part_bboxes = np.zeros((num_instances, self.num_coarse_classes, 4), dtype=np.float32)
+
+        for i, parsing in enumerate(gt_parsings):
+            for j in range(self.num_coarse_classes):
+                fine_map = self.coarse_to_fine_maps[j]
+
+                coarse_mask = np.zeros(parsing.shape, dtype=np.bool8)
+                num_valids = 0
+                for k in fine_map:
+                    coarse_mask = coarse_mask + (parsing == k)
+                    num_valids += (parsing.reshape(-1) == k).sum(0)
+
+                coarse_part_labels[i, j] = (num_valids > 0).astype(np.int64)
+                if num_valids > 0:
+                    if j == self.num_coarse_classes - 1:
+                        coarse_part_points[i, j, :] = np.array(
+                                [(gt_bboxes[i][0] + gt_bboxes[i][-1]+1) / 2,
+                                (gt_bboxes[i][1] + gt_bboxes[i][-1]+1) / 2],
+                                dtype=np.float32)
+                        coarse_part_bboxes[i, j, :] = gt_bboxes[i]
+                    else:
+                        part_map = coarse_mask[None]
+                        x_any = part_map.any(axis=1)
+                        y_any = part_map.any(axis=2)
+                        x = np.where(x_any[0, :])[0]
+                        y = np.where(y_any[0, :])[0]
+                        if len(x) > 0 and len(y) > 0:
+                            coarse_part_points[i, j, :] = np.array(
+                                [(x[0] + x[-1]+1) / 2, (y[0] + y[-1]+1) / 2], dtype=np.float32)
+                            coarse_part_bboxes[i, j, :] = np.array(
+                                [x[0], y[0], x[-1], y[-1]], dtype=np.float32)
+                        
+
+        results['gt_parse_labels'] = coarse_part_labels
+        results['gt_parse_points'] = coarse_part_points
+        results['gt_parse_bboxes'] = coarse_part_bboxes
 
         return results

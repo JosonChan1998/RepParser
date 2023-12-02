@@ -8,11 +8,10 @@ import cv2
 import mmcv
 import numpy as np
 from numpy import random
-from random import sample
 
-from mmdet.core import PolygonMasks, find_inside_bboxes
+from mmdet.core import BitmapMasks, PolygonMasks, find_inside_bboxes
 from mmdet.core.evaluation.bbox_overlaps import bbox_overlaps
-from mmdet.core.post_processing import (get_affine_transform, warp_affine_joints)
+from mmdet.utils import log_img_scale
 from ..builder import PIPELINES
 
 try:
@@ -63,6 +62,9 @@ class Resize:
         backend (str): Image resize backend, choices are 'cv2' and 'pillow'.
             These two backends generates slightly different results. Defaults
             to 'cv2'.
+        interpolation (str): Interpolation method, accepted values are
+            "nearest", "bilinear", "bicubic", "area", "lanczos" for 'cv2'
+            backend, "nearest", "bilinear" for 'pillow' backend.
         override (bool, optional): Whether to override `scale` and
             `scale_factor` so as to call resize twice. Default False. If True,
             after the first resizing, the existed `scale` and `scale_factor`
@@ -78,6 +80,7 @@ class Resize:
                  keep_ratio=True,
                  bbox_clip_border=True,
                  backend='cv2',
+                 interpolation='bilinear',
                  override=False):
         if img_scale is None:
             self.img_scale = None
@@ -100,6 +103,7 @@ class Resize:
         self.ratio_range = ratio_range
         self.keep_ratio = keep_ratio
         # TODO: refactor the override option in Resize
+        self.interpolation = interpolation
         self.override = override
         self.bbox_clip_border = bbox_clip_border
 
@@ -216,6 +220,7 @@ class Resize:
                     results[key],
                     results['scale'],
                     return_scale=True,
+                    interpolation=self.interpolation,
                     backend=self.backend)
                 # the w_scale and h_scale has minor difference
                 # a real fix should be done in the mmcv.imrescale in the future
@@ -228,6 +233,7 @@ class Resize:
                     results[key],
                     results['scale'],
                     return_scale=True,
+                    interpolation=self.interpolation,
                     backend=self.backend)
             results[key] = img
 
@@ -276,21 +282,25 @@ class Resize:
                     backend=self.backend)
             results[key] = gt_seg
     
-    def _resize_parsing(self, results):
-        if 'gt_parsings' in results.keys():
+    def _resize_parse(self, results):
+        for key in results.get('parse_fields', []):
             if self.keep_ratio:
                 resized_parsing_maps = np.stack([
                     mmcv.imrescale(
-                        parsing_map, results['scale'], interpolation='nearest')
-                    for parsing_map in results['gt_parsings']
+                        parsing_map,
+                        results['scale'],
+                        interpolation='nearest')
+                    for parsing_map in results[key]
                 ])
             else:
                 resized_parsing_maps = np.stack([
                     mmcv.imresize(
-                        parsing_map, results['img_shape'][:2], interpolation='nearest')
-                    for parsing_map in results['gt_parsings']
+                        parsing_map,
+                        results['img_shape'][:2],
+                        interpolation='nearest')
+                    for parsing_map in results[key]
                 ])
-            results['gt_parsings'] = resized_parsing_maps
+            results[key] = resized_parsing_maps
 
     def __call__(self, results):
         """Call function to resize images, bounding boxes, masks, semantic
@@ -327,8 +337,7 @@ class Resize:
         self._resize_bboxes(results)
         self._resize_masks(results)
         self._resize_seg(results)
-        self._resize_parsing(results)
-
+        self._resize_parse(results)
         return results
 
     def __repr__(self):
@@ -440,8 +449,17 @@ class RandomFlip:
         else:
             raise ValueError(f"Invalid flipping direction '{direction}'")
         return flipped
+    
+    def parse_seg_flip(self, gt_semantic_seg):
+        for l_r in self.flip_map:
+            left = np.where(gt_semantic_seg == l_r[0])
+            right = np.where(gt_semantic_seg == l_r[1])
+            gt_semantic_seg[left] = l_r[1]
+            gt_semantic_seg[right] = l_r[0]
 
-    def parsing_flip(self, gt_parsings, direction):
+        return gt_semantic_seg
+
+    def parse_flip(self, gt_parsings, direction):
         flipped_parsings = np.stack([
             mmcv.imflip(parsing_map, direction=direction)
             for parsing_map in gt_parsings
@@ -453,25 +471,6 @@ class RandomFlip:
             flipped_parsings[right] = l_r[0]
 
         return flipped_parsings
-    
-    def parsing_seg_flip(self, gt_semantic_seg):
-        for l_r in self.flip_map:
-            left = np.where(gt_semantic_seg == l_r[0])
-            right = np.where(gt_semantic_seg == l_r[1])
-            gt_semantic_seg[left] = l_r[1]
-            gt_semantic_seg[right] = l_r[0]
-
-        return gt_semantic_seg
-    
-    def parsing_labels_flip(self, gt_parsing_labels):
-        gt_parsing_labels_flip = gt_parsing_labels.copy()
-        for l_r in self.flip_map:
-            left = l_r[0] - 1
-            right = l_r[1] - 1
-            gt_parsing_labels_flip[:, left] = gt_parsing_labels[:, right]
-            gt_parsing_labels_flip[:, right] = gt_parsing_labels[:, left]
-
-        return gt_parsing_labels_flip
 
     def __call__(self, results):
         """Call function to flip bounding boxes, masks, semantic segmentation
@@ -527,16 +526,15 @@ class RandomFlip:
                 results[key] = mmcv.imflip(
                     results[key], direction=results['flip_direction'])
             
-            # flip parsing
-            if 'gt_parsings' in results.keys():
-                results['gt_parsings'] = self.parsing_flip(results['gt_parsings'],
-                                                           results['flip_direction'])
-                if 'gt_semantic_seg' in results.keys():
-                    results['gt_semantic_seg'] = self.parsing_seg_flip(results['gt_semantic_seg'])
-
-            # flip parsing labels
-            if 'gt_parsing_labels' in results.keys():
-                results['gt_parsing_labels'] = self.parsing_labels_flip(results['gt_parsing_labels'])
+            # flip parses
+            for key in results.get('parse_fields', []):
+                results[key] = self.parse_flip(
+                    results[key], results['flip_direction'])
+            
+            # flip segs
+            if self.flip_map is not None:
+                for key in results.get('seg_fields', []):
+                    results[key] = self.parse_seg_flip(results[key])
 
         return results
 
@@ -585,9 +583,9 @@ class RandomShift:
             random_shift_y = random.randint(-self.max_shift_px,
                                             self.max_shift_px)
             new_x = max(0, random_shift_x)
-            orig_x = max(0, -random_shift_x)
+            ori_x = max(0, -random_shift_x)
             new_y = max(0, random_shift_y)
-            orig_y = max(0, -random_shift_y)
+            ori_y = max(0, -random_shift_y)
 
             # TODO: support mask and semantic segmentation maps.
             for key in results.get('bbox_fields', []):
@@ -623,7 +621,7 @@ class RandomShift:
                 new_h = img_h - np.abs(random_shift_y)
                 new_w = img_w - np.abs(random_shift_x)
                 new_img[new_y:new_y + new_h, new_x:new_x + new_w] \
-                    = img[orig_y:orig_y + new_h, orig_x:orig_x + new_w]
+                    = img[ori_y:ori_y + new_h, ori_x:ori_x + new_w]
                 results[key] = new_img
 
         return results
@@ -701,19 +699,6 @@ class Pad:
         pad_val = self.pad_val.get('masks', 0)
         for key in results.get('mask_fields', []):
             results[key] = results[key].pad(pad_shape, pad_val=pad_val)
-    
-    def _pad_parsings(self, results):
-        """Pad masks according to ``results['pad_shape']``."""
-        pad_shape = results['pad_shape'][:2]
-        pad_val = self.pad_val.get('masks', 0)
-        pad_parsings = []
-        if 'gt_parsings' in results.keys():
-            parsings = results['gt_parsings']
-            for parsing in parsings:
-                pad_parsings.append(mmcv.impad(
-                    parsing, shape=pad_shape, pad_val=pad_val))
-
-            results['gt_parsings'] = np.array(pad_parsings)
 
     def _pad_seg(self, results):
         """Pad semantic segmentation map according to
@@ -722,6 +707,17 @@ class Pad:
         for key in results.get('seg_fields', []):
             results[key] = mmcv.impad(
                 results[key], shape=results['pad_shape'][:2], pad_val=pad_val)
+    
+    def _pad_parse(self, results):
+        """Pad masks according to ``results['pad_shape']``."""
+        pad_shape = results['pad_shape'][:2]
+        pad_val = self.pad_val.get('masks', 0)
+        for key in results.get('parse_fields', []):
+            pad_parsings = []
+            for parsing in results[key]:
+                pad_parsings.append(mmcv.impad(
+                    parsing, shape=pad_shape, pad_val=pad_val))
+            results[key] = np.array(pad_parsings)
 
     def __call__(self, results):
         """Call function to pad images, masks, semantic segmentation maps.
@@ -735,7 +731,6 @@ class Pad:
         self._pad_img(results)
         self._pad_masks(results)
         self._pad_seg(results)
-        self._pad_parsings(results)
         return results
 
     def __repr__(self):
@@ -854,18 +849,6 @@ class RandomCrop:
         self.bbox2mask = {
             'gt_bboxes': 'gt_masks',
             'gt_bboxes_ignore': 'gt_masks_ignore'
-        }
-        self.bbox2parsing = {
-            'gt_bboxes': 'gt_parsings',
-            'gt_bboxes_ignore': 'gt_parsings_ignore'
-        }
-        self.bbox2parsing_labels = {
-            'gt_bboxes': 'gt_parsing_labels',
-            'gt_bboxes_ignore': 'gt_parsing_labels_ignore'
-        }
-        self.bbox2keypoint = {
-            'gt_bboxes': 'gt_keypoints',
-            'gt_bboxes_ignore': 'gt_keys_ignore'
         }
 
     def _crop_data(self, results, crop_size, allow_negative_crop):
@@ -2071,9 +2054,10 @@ class Mosaic:
 
     Args:
         img_scale (Sequence[int]): Image size after mosaic pipeline of single
-           image. Default to (640, 640).
+            image. The shape order should be (height, width).
+            Default to (640, 640).
         center_ratio_range (Sequence[float]): Center ratio range of mosaic
-           output. Default to (0.5, 1.5).
+            output. Default to (0.5, 1.5).
         min_bbox_size (int | float): The minimum pixel for filtering
             invalid bboxes after the mosaic pipeline. Default to 0.
         bbox_clip_border (bool, optional): Whether to clip the objects outside
@@ -2084,6 +2068,8 @@ class Mosaic:
             is True, the filter rule will not be applied, and the
             `min_bbox_size` is invalid. Default to True.
         pad_val (int): Pad value. Default to 114.
+        prob (float): Probability of applying this transformation.
+            Default to 1.0.
     """
 
     def __init__(self,
@@ -2092,14 +2078,20 @@ class Mosaic:
                  min_bbox_size=0,
                  bbox_clip_border=True,
                  skip_filter=True,
-                 pad_val=114):
+                 pad_val=114,
+                 prob=1.0):
         assert isinstance(img_scale, tuple)
+        assert 0 <= prob <= 1.0, 'The probability should be in range [0,1]. '\
+            f'got {prob}.'
+
+        log_img_scale(img_scale, skip_square=True)
         self.img_scale = img_scale
         self.center_ratio_range = center_ratio_range
         self.min_bbox_size = min_bbox_size
         self.bbox_clip_border = bbox_clip_border
         self.skip_filter = skip_filter
         self.pad_val = pad_val
+        self.prob = prob
 
     def __call__(self, results):
         """Call function to make a mosaic of image.
@@ -2110,6 +2102,9 @@ class Mosaic:
         Returns:
             dict: Result dict with mosaic transformed.
         """
+
+        if random.uniform(0, 1) > self.prob:
+            return results
 
         results = self._mosaic_transform(results)
         return results
@@ -2324,7 +2319,7 @@ class MixUp:
                 |             pad              |
                 +------------------------------+
 
-     The mixup transform steps are as follows::
+     The mixup transform steps are as follows:
 
         1. Another random image is picked by dataset and embedded in
            the top left patch(after padding and resizing)
@@ -2333,15 +2328,15 @@ class MixUp:
 
     Args:
         img_scale (Sequence[int]): Image output size after mixup pipeline.
-           Default: (640, 640).
+            The shape order should be (height, width). Default: (640, 640).
         ratio_range (Sequence[float]): Scale ratio of mixup image.
-           Default: (0.5, 1.5).
+            Default: (0.5, 1.5).
         flip_ratio (float): Horizontal flip ratio of mixup image.
-           Default: 0.5.
+            Default: 0.5.
         pad_val (int): Pad value. Default: 114.
         max_iters (int): The maximum number of iterations. If the number of
-           iterations is greater than `max_iters`, but gt_bbox is still
-           empty, then the iteration is terminated. Default: 15.
+            iterations is greater than `max_iters`, but gt_bbox is still
+            empty, then the iteration is terminated. Default: 15.
         min_bbox_size (float): Width and height threshold to filter bboxes.
             If the height or width of a box is smaller than this value, it
             will be removed. Default: 5.
@@ -2373,6 +2368,7 @@ class MixUp:
                  bbox_clip_border=True,
                  skip_filter=True):
         assert isinstance(img_scale, tuple)
+        log_img_scale(img_scale, skip_square=True)
         self.dynamic_scale = img_scale
         self.ratio_range = ratio_range
         self.flip_ratio = flip_ratio
@@ -2518,9 +2514,8 @@ class MixUp:
             keep_list = self._filter_box_candidates(retrieve_gt_bboxes.T,
                                                     cp_retrieve_gt_bboxes.T)
 
-            if keep_list.sum() >= 1.0:
-                retrieve_gt_labels = retrieve_gt_labels[keep_list]
-                cp_retrieve_gt_bboxes = cp_retrieve_gt_bboxes[keep_list]
+            retrieve_gt_labels = retrieve_gt_labels[keep_list]
+            cp_retrieve_gt_bboxes = cp_retrieve_gt_bboxes[keep_list]
 
         mixup_gt_bboxes = np.concatenate(
             (results['gt_bboxes'], cp_retrieve_gt_bboxes), axis=0)
@@ -2830,130 +2825,162 @@ class YOLOXHSVRandomAug:
         return repr_str
 
 
-
 @PIPELINES.register_module()
-class RandomMask:
-    def __init__(self,
-                 part_list=None,
-                 mask_ratio=0.5,
-                 recompute_bbox=False):
-        self.part_list = part_list
-        self.part_prob = [0.022, 0.129, 0.005, 0.005, 0.111,
-                          0.012, 0.050, 0.009, 0.078, 0.120,
-                          0.004, 0.005, 0.136, 0.091, 0.094,
-                          0.023, 0.023, 0.038, 0.038]
-        self.part_prob = np.array(self.part_prob, dtype=np.float64)
-        self.mask_template = np.array([154, 217, 250], dtype=np.uint8)
-        self.mask_radio = mask_ratio
-        self.recompute_bbox = recompute_bbox
-        self.mask_mode = ['content', 'context']
-    
+class CopyPaste:
+    """Simple Copy-Paste is a Strong Data Augmentation Method for Instance
+    Segmentation The simple copy-paste transform steps are as follows:
+
+    1. The destination image is already resized with aspect ratio kept,
+       cropped and padded.
+    2. Randomly select a source image, which is also already resized
+       with aspect ratio kept, cropped and padded in a similar way
+       as the destination image.
+    3. Randomly select some objects from the source image.
+    4. Paste these source objects to the destination image directly,
+       due to the source and destination image have the same size.
+    5. Update object masks of the destination image, for some origin objects
+       may be occluded.
+    6. Generate bboxes from the updated destination masks and
+       filter some objects which are totally occluded, and adjust bboxes
+       which are partly occluded.
+    7. Append selected source bboxes, masks, and labels.
+
+    Args:
+        max_num_pasted (int): The maximum number of pasted objects.
+            Default: 100.
+        bbox_occluded_thr (int): The threshold of occluded bbox.
+            Default: 10.
+        mask_occluded_thr (int): The threshold of occluded mask.
+            Default: 300.
+        selected (bool): Whether select objects or not. If select is False,
+            all objects of the source image will be pasted to the
+            destination image.
+            Default: True.
+    """
+
+    def __init__(
+        self,
+        max_num_pasted=100,
+        bbox_occluded_thr=10,
+        mask_occluded_thr=300,
+        selected=True,
+    ):
+        self.max_num_pasted = max_num_pasted
+        self.bbox_occluded_thr = bbox_occluded_thr
+        self.mask_occluded_thr = mask_occluded_thr
+        self.selected = selected
+
+    def get_indexes(self, dataset):
+        """Call function to collect indexes.s.
+
+        Args:
+            dataset (:obj:`MultiImageMixDataset`): The dataset.
+        Returns:
+            list: Indexes.
+        """
+        return random.randint(0, len(dataset))
+
     def __call__(self, results):
-       
-        gt_parsings = results['gt_parsings'].copy()
-        gt_parsing_labels = results['gt_parsing_labels'].copy()
-        gt_masks = results['gt_masks'].masks.copy()
-        whole_color_temp = np.zeros(
-            (gt_parsings[0].shape[0], gt_parsings[0].shape[1], 3), dtype=np.uint8)
-        one_mask_context = np.ones(gt_parsings[0].shape, dtype=np.bool8)
-        one_mask_content = np.ones(gt_parsings[0].shape, dtype=np.bool8)
-        one_gt_sem_content = np.ones(gt_parsings[0].shape, dtype=np.bool8)
+        """Call function to make a copy-paste of image.
 
-        for i, _ in enumerate(gt_parsings):
-            mode = np.random.choice(self.mask_mode)
-            ratio = np.random.random()
-            if gt_parsing_labels[i].sum() > 3 and ratio > self.mask_radio:
-                valid_inds = gt_parsing_labels[i] > 0
-                exist_prob = self.part_prob[valid_inds]
-                exist_part = np.argwhere(valid_inds).reshape(-1)
-                if mode == 'context':
-                    exist_prob = exist_prob / exist_prob.sum()
-                    part_id = np.random.choice(exist_part, p=exist_prob) + 1
-                    valid_mask = (gt_parsings[i] == part_id)
-                    whole_color_temp[valid_mask, :] = self.mask_template
-                    one_mask_context *= ~valid_mask
-                elif mode == 'content':
-                    exist_prob = (1 - exist_prob / exist_prob.sum())
-                    exist_prob = exist_prob / exist_prob.sum()
-                    part_id = np.random.choice(exist_part, p=exist_prob) + 1
-                    valid_mask = (gt_parsings[i] == part_id)[None]
+        Args:
+            results (dict): Result dict.
+        Returns:
+            dict: Result dict with copy-paste transformed.
+        """
 
-                    boxes = np.zeros((1, 4), dtype=np.float32)
-                    x_any = valid_mask.any(axis=1)
-                    y_any = valid_mask.any(axis=2)
+        assert 'mix_results' in results
+        num_images = len(results['mix_results'])
+        assert num_images == 1, \
+            f'CopyPaste only supports processing 2 images, got {num_images}'
+        if self.selected:
+            selected_results = self._select_object(results['mix_results'][0])
+        else:
+            selected_results = results['mix_results'][0]
+        return self._copy_paste(results, selected_results)
 
-                    x = np.where(x_any[0, :])[0]
-                    y = np.where(y_any[0, :])[0]
-                    if len(x) > 0 and len(y) > 0:
-                        # use +1 for x_max and y_max so that the right and bottom
-                        # boundary of instance masks are fully included by the box
-                        boxes[0, :] = np.array([x[0], y[0], x[-1] + 1, y[-1] + 1],
-                                                dtype=np.float32)
-                    boxes[..., 0] -= 5
-                    boxes[..., 1] -= 5
-                    boxes[..., 2] += 5
-                    boxes[..., 3] += 5
-                    img_shape = results['img_shape']
-                    boxes[:, 0::2] = np.clip(boxes[:, 0::2], 0, img_shape[1])
-                    boxes[:, 1::2] = np.clip(boxes[:, 1::2], 0, img_shape[0])
-                    x1, y1, x2, y2 = [int(i) for i in boxes[0]]
-                    valid_mask[:, y1:y2, x1:x2] = True
-                    one_mask_content &= ~(gt_parsings[i] > 0) + valid_mask.squeeze(0)
+    def _select_object(self, results):
+        """Select some objects from the source results."""
+        bboxes = results['gt_bboxes']
+        labels = results['gt_labels']
+        masks = results['gt_masks']
+        max_num_pasted = min(bboxes.shape[0] + 1, self.max_num_pasted)
+        num_pasted = np.random.randint(0, max_num_pasted)
+        selected_inds = np.random.choice(
+            bboxes.shape[0], size=num_pasted, replace=False)
 
-                    one_gt_sem_content &= ~(gt_parsings[i] > 0) + (gt_parsings[i] == part_id)
-                    gt_parsings[i] *= (gt_parsings[i] == part_id)
-                    gt_parsing_labels[i][:] = 0
-                    gt_parsing_labels[i][part_id - 1] = 1
+        selected_bboxes = bboxes[selected_inds]
+        selected_labels = labels[selected_inds]
+        selected_masks = masks[selected_inds]
 
-        results['img'] = results['img'] * one_mask_context[:, :, None] + results['img'] * (1 - one_mask_context[:, :, None]) * 0.2
-        results['img'] = results['img'] + whole_color_temp * 0.8
-        results['img'] = results['img'] * one_mask_content[:, :, None]
-        results['gt_semantic_seg'] = results['gt_semantic_seg'] * one_gt_sem_content
-        results['gt_parsings'] = gt_parsings
-        results['gt_parsing_labels'] = gt_parsing_labels
-
-        if self.recompute_bbox:
-            img_shape = results['img_shape']
-            results['gt_masks'].masks = gt_masks
-            bboxes = results['gt_masks'].get_bboxes()
-            bboxes[:, 0::2] = np.clip(bboxes[:, 0::2], 0, img_shape[1])
-            bboxes[:, 1::2] = np.clip(bboxes[:, 1::2], 0, img_shape[0])
-            valid_inds = (bboxes[:, 2] > bboxes[:, 0]) & (
-                bboxes[:, 3] > bboxes[:, 1])
-            if not valid_inds.any():
-                return None
-            results['gt_bboxes'] = bboxes[valid_inds, :]
-            results['gt_labels'] = results['gt_labels'][valid_inds]
-
-        for bbox in results['gt_bboxes']:
-            x1, y1, x2, y2 = [int(i) for i in bbox]
-            cv2.rectangle(results['img'], (x1,y1), (x2,y2), (0,255,0), 2)
-        cv2.imwrite("bbox.jpg", results['img'])
-
-        colormap = self.create_pascal_label_colormap()
-        parsing_maps = results['gt_parsings']
-        for i, parsing in enumerate(parsing_maps):
-            parsing_image = colormap[parsing].astype(np.uint8)
-            cv2.imwrite("parsing-" + str(i) + ".jpg", parsing_image)
-        
-        sem_parsing_map = results['gt_semantic_seg']
-        sem_parsing_map = colormap[sem_parsing_map].astype(np.uint8)
-        cv2.imwrite("parsing_seg.jpg", sem_parsing_map)
-
+        results['gt_bboxes'] = selected_bboxes
+        results['gt_labels'] = selected_labels
+        results['gt_masks'] = selected_masks
         return results
 
-    def create_pascal_label_colormap(self):
-    
-        colormap = np.zeros((256, 3), dtype=int)
-        ind = np.arange(256, dtype=int)
+    def _copy_paste(self, dst_results, src_results):
+        """CopyPaste transform function.
 
-        for shift in reversed(range(8)):
-            for channel in range(3):
-                colormap[:, channel] |= ((ind >> channel) & 1) << shift
-            ind >>= 3
-        return colormap
+        Args:
+            dst_results (dict): Result dict of the destination image.
+            src_results (dict): Result dict of the source image.
+        Returns:
+            dict: Updated result dict.
+        """
+        dst_img = dst_results['img']
+        dst_bboxes = dst_results['gt_bboxes']
+        dst_labels = dst_results['gt_labels']
+        dst_masks = dst_results['gt_masks']
+
+        src_img = src_results['img']
+        src_bboxes = src_results['gt_bboxes']
+        src_labels = src_results['gt_labels']
+        src_masks = src_results['gt_masks']
+
+        if len(src_bboxes) == 0:
+            return dst_results
+
+        # update masks and generate bboxes from updated masks
+        composed_mask = np.where(np.any(src_masks.masks, axis=0), 1, 0)
+        updated_dst_masks = self.get_updated_masks(dst_masks, composed_mask)
+        updated_dst_bboxes = updated_dst_masks.get_bboxes()
+        assert len(updated_dst_bboxes) == len(updated_dst_masks)
+
+        # filter totally occluded objects
+        bboxes_inds = np.all(
+            np.abs(
+                (updated_dst_bboxes - dst_bboxes)) <= self.bbox_occluded_thr,
+            axis=-1)
+        masks_inds = updated_dst_masks.masks.sum(
+            axis=(1, 2)) > self.mask_occluded_thr
+        valid_inds = bboxes_inds | masks_inds
+
+        # Paste source objects to destination image directly
+        img = dst_img * (1 - composed_mask[..., np.newaxis]
+                         ) + src_img * composed_mask[..., np.newaxis]
+        bboxes = np.concatenate([updated_dst_bboxes[valid_inds], src_bboxes])
+        labels = np.concatenate([dst_labels[valid_inds], src_labels])
+        masks = np.concatenate(
+            [updated_dst_masks.masks[valid_inds], src_masks.masks])
+
+        dst_results['img'] = img
+        dst_results['gt_bboxes'] = bboxes
+        dst_results['gt_labels'] = labels
+        dst_results['gt_masks'] = BitmapMasks(masks, masks.shape[1],
+                                              masks.shape[2])
+
+        return dst_results
+
+    def get_updated_masks(self, masks, composed_mask):
+        assert masks.masks.shape[-2:] == composed_mask.shape[-2:], \
+            'Cannot compare two arrays of different size'
+        masks.masks = np.where(composed_mask, 0, masks.masks)
+        return masks
 
     def __repr__(self):
         repr_str = self.__class__.__name__
-        repr_str += f'(part_list={self.part_list}'
+        repr_str += f'max_num_pasted={self.max_num_pasted}, '
+        repr_str += f'bbox_occluded_thr={self.bbox_occluded_thr}, '
+        repr_str += f'mask_occluded_thr={self.mask_occluded_thr}, '
+        repr_str += f'selected={self.selected}, '
         return repr_str

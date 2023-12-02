@@ -26,6 +26,7 @@ class MaskPseudoSampler(BaseSampler):
 
     def sample(self, assign_result, masks, gt_masks, **kwargs):
         """Directly returns the positive and negative indices  of samples.
+
         Args:
             assign_result (:obj:`AssignResult`): Assigned results
             masks (torch.Tensor): Bounding boxes
