@@ -24,8 +24,8 @@ Make sure to put the files as the following structure:
   │  │  │─annotations
   |
   ├─work_dirs
-  |  ├─repparser_r50_45k_cihp
-  |  |  ├─iter_45000.pth
+  |  ├─resparser_r50_fpn_3x_cihp
+  |  |  ├─epoch_75.pth
   ```
 
 ## Results
@@ -34,7 +34,8 @@ Make sure to put the files as the following structure:
 
 |  Backbone    |  LR  | mIOU | APvol | AP_p50 | PCP50 | download |
 |--------------|:----:|:----:|:-----:|:------:|:-----:|:--------:|
-|  R-50        |  1x  | 52.9 | 51.9  |  57.5  |  55.7 |[model](https://drive.google.com/file/d/1-m83sJcu9fsRNE4pNTBLmkOB8cKhPyCK/view?usp=sharing) |
+|  R-50        |  1x  | 53.6 | 53.7  |  62.7  |  59.3 |[model](https://drive.google.com/file/d/1IkMpcTjqNtisBZ128AB4kqkTsnklU_04/view?usp=sharing) |
+|  R-50        |  3x  | 57.0 | 55.2  |  66.2  |  62.6 |[model](https://drive.google.com/file/d/1D-R3e_76z_lP23A7W66U16v3C1DGlb9n/view?usp=sharing) |
 
 ## Evaluation
 ```
@@ -49,4 +50,3 @@ python utils/eval.py
 ```
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ./tools/dist_train.sh configs/ReSParser/resparser_r50_fpn_3x_cihp.py 8
 ```
-
