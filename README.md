@@ -40,7 +40,7 @@ Make sure to put the files as the following structure:
 ## Evaluation
 ```
 # inference
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ./tools/dist_test.sh configs/ReSParser/resparser_r50_fpn_3x_cihp.py work_dirs/resparser_r50_fpn_3x_cihp/iter_45000.pth 8 --eval bbox --eval-options "jsonfile_prefix=work_dirs/resparser_r50_fpn_3x_cihp/resparser_r50_fpn_3x_cihp_val_result"
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ./tools/dist_test.sh configs/ReSParser/resparser_r50_fpn_3x_cihp.py work_dirs/resparser_r50_fpn_3x_cihp/epoch_75.pth 8 --eval bbox --eval-options "jsonfile_prefix=work_dirs/resparser_r50_fpn_3x_cihp/resparser_r50_fpn_3x_cihp_val_result"
 
 # eval, noted that should change the json path produce by previous step.
 python utils/eval.py
