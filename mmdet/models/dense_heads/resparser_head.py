@@ -794,12 +794,6 @@ class ReSParserHead(FCOSHead):
         part_parse_feats = parse_feats.unsqueeze(1).repeat(1, self.num_fine_classes-1, 1, 1, 1)
         part_parse_feats = part_parse_feats.reshape(-1, D, H, W)
 
-        # part_strides = strides[None].repeat(1, self.num_coarse_classes).reshape(-1)
-        # coarse_rel_coords = relative_coordinate_maps(
-        #     parse_feats.shape, part_centers, part_strides, self.parsing_out_stride)
-        # coarse_rel_coords = coarse_rel_coords.reshape(-1, self.num_coarse_classes, 2, H, W)
-        # coarse_rel_coords = coarse_rel_coords.min(dim=1)[0]
-        # coarse_rel_coords = coarse_rel_coords.unsqueeze(1).repeat(1, self.num_fine_classes-1, 1, 1, 1)
         coarse_rel_coords = rel_coords.unsqueeze(1).repeat(1, self.num_fine_classes-1, 1, 1, 1)
         part_parse_feats = torch.cat([
             coarse_rel_coords.view(-1, 2, H, W),
@@ -1153,15 +1147,6 @@ class ReSParserHead(FCOSHead):
             pred_coarse_part_points[..., 0] = pred_coarse_part_points[..., 0].clamp(0, batch_input_shape[1])
             pred_coarse_part_points[..., 1] = pred_coarse_part_points[..., 1].clamp(0, batch_input_shape[0])
 
-            # img = cv2.imread(img_meta['filename'])
-            # pred_coarse_part_points /= det_bboxes[:, :4].new_tensor(scale_factor[:2])
-            # for i, points in enumerate(pred_coarse_part_points):
-            #     if det_bboxes[i, 4] > 0.5:
-            #         for point in points:
-            #             x, y = [int(i) for i in point]
-            #             cv2.circle(img, (x, y), radius=5, color=(20, 255, 0), thickness=5)
-            # img = cv2.imwrite('point.jpg', img)
-
             accum_num_points = [0]
             for i, center in enumerate(mlvl_points):
                 accum_num_points.append(accum_num_points[i] + center.size(0))
@@ -1219,18 +1204,6 @@ class ReSParserHead(FCOSHead):
 
             rep_points = decode_point(
                 rep_points_offsets, pred_coarse_part_points, img_factors)
-
-            # img = cv2.imread(img_meta['filename'])
-            # rep_points_tmp = rep_points / det_bboxes[:, :4].new_tensor(scale_factor[:2])
-            # rep_points_tmp = rep_points_tmp.reshape(num_pos, self.num_coarse_classes, -1, 2)
-            # for i, rep_points_per_coarse in enumerate(rep_points_tmp):
-            #     if det_bboxes[i, 4] > 0.5:
-            #         for j, rep_point in enumerate(rep_points_per_coarse[2:3]):
-            #             color = (j * 20, 255, 0)
-            #             for point in rep_point:
-            #                 x, y = [int(p) for p in point]
-            #                 cv2.circle(img, (x, y), radius=3, color=color, thickness=3)
-            # img = cv2.imwrite('point.jpg', img)
 
             norm_rep_points = rep_points / img_factors.unsqueeze(1)[..., 2:]
             norm_rep_points = norm_rep_points * valid_ratios.unsqueeze(1)
