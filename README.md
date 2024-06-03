@@ -1,5 +1,5 @@
 # RepParser
-RepParser: End-to-End Multiple Human Parsing with Representative Parts
+ReSParser: Fully Convolutional Multiple Human Parsing With Representative Sets
 
 ## Installation
 - pytorch 1.7.1
@@ -49,4 +49,27 @@ python utils/eval.py
 ## Training
 ```
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ./tools/dist_train.sh configs/ReSParser/resparser_r50_fpn_3x_cihp.py 8
+```
+
+## Citation
+```
+@misc{chen2022repparser,
+      title={RepParser: End-to-End Multiple Human Parsing with Representative Parts}, 
+      author={Xiaojia Chen and Xuanhan Wang and Lianli Gao and Jingkuan Song},
+      year={2022},
+      eprint={2208.12908},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
+}
+
+@ARTICLE{10138431,
+  author={Dai, Yan and Chen, Xiaojia and Wang, Xuanhan and Pang, Minghui and Gao, Lianli and Shen, Heng Tao},
+  journal={IEEE Transactions on Multimedia}, 
+  title={ReSParser: Fully Convolutional Multiple Human Parsing With Representative Sets}, 
+  year={2024},
+  volume={26},
+  number={},
+  pages={1384-1394},
+  keywords={Pipelines;Task analysis;Kernel;Semantics;Pose estimation;Detectors;Crops;Multiple human parsing;human instance-level analysis;instance-aware modeling},
+  doi={10.1109/TMM.2023.3281070}}
 ```
